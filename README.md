@@ -1,11 +1,3 @@
----
-layout: post
-title: "scala auto mapper"
-date: "2019-01-28 10:49:38 +0800"
-category: scala
-author: linzihao
----
-
 ### 为什么需要auto-mapper
 在开发的过程中，一个相似的数据类经常会在多个层次中出现。
 例如在DAO层有一个ProductRow类，用来存放product table的字段。
@@ -128,4 +120,147 @@ b shouldEqual b_
 
 ### 如何实现的
 case class可以转换成他的generic representation, HList。  
-.......
+
+#### 基本思路
+基本思路是利用shapeless的Generic，把一个case class转成HList，再从HList转成另一个case class
+```
+case class A(i: Int, s: String)
+case class B(i: Int, s: String)
+
+val a = A(1, "s")
+val b = B(2, "s")
+
+val genA = Generic[A]
+val genB = Generic[B]
+val hlistA = genA.to(a) // 1 :: "s" :: HNil
+val b_ = genB.from(hlistA)  // B(2, "s")
+```
+
+现在可以写一个最基本的Projection[A, B]，当A和B的字段完全一样的时候可以转换
+```
+// 限制A和B的generic representation是一样的(都是L)
+class Projection[A, B] {
+  def to[L <: HList](a: A)(implicit
+                                         genA: LabelledGeneric.Aux[A, L],
+                                         genB: LabelledGeneric.Aux[B, L])
+  : B = genB.from(genA.to(a))
+}
+```
+
+如果要支持上面说的字段乱序和隐藏，需要额外定义一个MapRecord，MapRecord提供一个把A的HList转换成
+B的HList的方法
+```
+trait MapRecord[LI <: HList, LO <: HList] {
+  def apply(l: LI): LO
+}
+```
+
+现在可以给Projection提供多一个MapRecord。表示A和B的generic representation不必完全一样，只需要
+LA能够转换到LB就足够了。
+```
+class Projection[A, B] extends Serializable {
+  def to[LA <: HList, LB <: HList](a: A)(implicit
+                                         genA: LabelledGeneric.Aux[A, LA],
+                                         genB: LabelledGeneric.Aux[B, LB],
+                                         mr: MapRecord[LA, LB])
+  : B = genB.from(mr(genA.to(a)))
+}
+```
+
+#### 对HList进行修改
+关于怎么写MapRecord，其实就是对输入的type LI进行一些type level的操作，使之变成type LO。
+
+##### 乱序
+shapeless提供了一个Selector，可以在HList里面获取对应的key value pair。
+```
+val a = A(1, "s")
+val genA = LabelledGeneric[A]
+val hlistA = genA.to(a)
+
+val i = Witness('i)
+val s = Witness('s)
+
+val iSelector = Selector[genA.Repr, i.T]
+val sSelector = Selector[genA.Repr, s.T]
+
+val iValue = iSelector(hlistA)  // 1，key[i]对应的值
+val sValue = sSelector(hlistA)  // "s", key[s]对应的值
+```
+
+可以利用Selector，循环LO中所有的field Key，在LI中select对应的key value pair
+```
+// 假设B有两个field，keys分别是[s, i]
+// 两个keys各有一个对应的Selector
+val iSelector = Selector[genA.Repr, i.T]
+val sSelector = Selector[genA.Repr, s.T]
+// 按照B中field的顺序对LI进行select
+val hlistB = sSelector(hlistA) :: iSelector(hlistA) :: HNil
+```
+
+在这个例子中，成功把一个Int :: String :: HNil转换成了String :: Int :: HNil。现在可以利用
+递归，让编译器自动推导所有的乱序转换
+```
+// 递归终点，SourceHList要转换成HNil，HNil里面什么field都没有，所以根本不需要select，直接
+// 返回HNil就可以
+implicit def hnilMapRecord[SourceHList <: HList]: MapRecord[SourceHList, HNil] = new MapRecord[SourceHList, HNil] {
+    override def apply(l: SourceHList): HNil = HNil
+  }
+
+// 递归case，假设TargetHList的Tail可以转换(mrT)，并且可以在SourceHList中选出field K(select)
+// 那么就可以推导出存在一个MapRecord[SourceHList, FieldType[K, V] :: TargetHListTail]
+implicit def hconsMapRecordBase[K, V, SourceHList <: HList, TargetHListTail <: HList]
+  (implicit
+   select: Selector.Aux[SourceHList, K, V],
+   mrT: Lazy[MapRecord[SourceHList, TargetHListTail]])
+  : MapRecord[SourceHList, FieldType[K, V] :: TargetHListTail] = new MapRecord[SourceHList, FieldType[K, V] :: TargetHListTail] {
+    override def apply(l: SourceHList): FieldType[K, V] :: TargetHListTail =
+      field[K](select(l)) :: mrT.value(l)
+  }
+```
+
+##### LO的field比LI的field少
+通过上面Selector，自动解决了这个问题。因为是递归循环选LO的所有field。
+
+##### LI中某个key对应的类型是V，但是LO中key对应的类型是W
+V和W虽然不是一样的类型，但是只需要有一个从V到W的函数，就能完成转换。   
+只需要在自动推导的时候增加一个implicit V => W
+```
+// 只是一个type alias，方便自己不用重复写很长的type
+type MV[SourceHList <: HList, K, V, TargetHListTail <: HList] =
+    MapRecord[SourceHList, FieldType[K, V] :: TargetHListTail]
+    
+implicit def hconsMapRecord1[K, V, W, SourceHList <: HList, TargetHListTail <: HList]
+  (implicit
+   select: Selector.Aux[SourceHList, K, V],
+   f: V => W,
+   mrT: Lazy[MapRecord[SourceHList, TargetHListTail]])
+  : MV[SourceHList, K, W, TargetHListTail] = new MV[SourceHList, K, W, TargetHListTail] {
+    override def apply(l: SourceHList): FieldType[K, W] :: TargetHListTail =
+      field[K](f(select(l))) :: mrT.value(l)
+  }
+```
+
+##### LI中某个key对应的类型是Option[V]，但是LO中key对应的类型是V
+提供一个UnsafeOptionExtractorImplicits，当这个implicit在scope里的时候，可以把Option[V]变成V
+```
+object UnsafeOptionExtractorImplicits {
+  implicit def apply[T]: UnsafeOptionExtractor[T] = new UnsafeOptionExtractor[T]
+}
+```
+如果在LI中V，在LO中是Option[V]，只需要在select了V之后加上Option functor的pure方法即可。
+
+##### nested type
+递归的对nested type进行转换
+```
+implicit def hconsMapRecord0[K, V, W, VRepr <: HList, WRepr <: HList, SourceHList <: HList, TargetHListTail <: HList]
+  (implicit
+   select: Selector.Aux[SourceHList, K, V],
+   genV: LabelledGeneric.Aux[V, VRepr],
+   genW: LabelledGeneric.Aux[W, WRepr],
+   mrH: Lazy[MapRecord[VRepr, WRepr]],
+   mrT: Lazy[MapRecord[SourceHList, TargetHListTail]])
+  : MV[SourceHList, K, W, TargetHListTail] = new MV[SourceHList, K, W, TargetHListTail] {
+    override def apply(l: SourceHList): FieldType[K, W] :: TargetHListTail =
+      field[K](genW.from(mrH.value(genV.to(select(l))))) :: mrT.value(l)
+  }
+```
