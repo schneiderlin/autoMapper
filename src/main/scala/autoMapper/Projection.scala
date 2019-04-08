@@ -1,5 +1,7 @@
+package autoMapper
+
 import shapeless._
-import shapeless.labelled.{field, FieldType}
+import shapeless.labelled.{FieldType, field}
 import shapeless.ops.record.Selector
 
 import scala.collection.generic.CanBuildFrom
@@ -10,7 +12,7 @@ trait MapRecord[LI <: HList, LO <: HList] {
 }
 
 trait LowPriorityMapRecordBase {
-  type MV1[SourceHList <: HList, K, V, TargetHListTail <: HList] =
+  type MR[SourceHList <: HList, K, V, TargetHListTail <: HList] =
     MapRecord[SourceHList, FieldType[K, V] :: TargetHListTail]
 
   /**
@@ -20,7 +22,7 @@ trait LowPriorityMapRecordBase {
   (implicit
    select: Selector.Aux[SourceHList, K, V],
    mrT: Lazy[MapRecord[SourceHList, TargetHListTail]])
-  : MV1[SourceHList, K, V, TargetHListTail] = new MV1[SourceHList, K, V, TargetHListTail] {
+  : MR[SourceHList, K, V, TargetHListTail] = new MR[SourceHList, K, V, TargetHListTail] {
     override def apply(l: SourceHList): FieldType[K, V] :: TargetHListTail =
       field[K](select(l)) :: mrT.value(l)
   }
@@ -35,13 +37,45 @@ trait LowPriorityMapRecord1 extends LowPriorityMapRecordBase {
    select: Selector.Aux[SourceHList, K, V],
    f: V => W,
    mrT: Lazy[MapRecord[SourceHList, TargetHListTail]])
-  : MV1[SourceHList, K, W, TargetHListTail] = new MV1[SourceHList, K, W, TargetHListTail] {
+  : MR[SourceHList, K, W, TargetHListTail] = new MR[SourceHList, K, W, TargetHListTail] {
     override def apply(l: SourceHList): FieldType[K, W] :: TargetHListTail =
       field[K](f(select(l))) :: mrT.value(l)
   }
 }
 
-trait LowPriorityMapRecordOption5 extends LowPriorityMapRecord1 {
+trait LowPriorityMapRecordOption7 extends LowPriorityMapRecord1 {
+  /**
+    * V在Option中，V和W是一样的类型
+    */
+  implicit def hconsMapRecordOption7[K, V, SourceHList <: HList, TargetHListTail <: HList]
+  (implicit
+   select: Selector.Aux[SourceHList, K, Option[V]],
+   mrT: Lazy[MapRecord[SourceHList, TargetHListTail]],
+   extractor: UnsafeOptionExtractor[V])
+  : MR[SourceHList, K, V, TargetHListTail] = new MR[SourceHList, K, V, TargetHListTail] {
+    override def apply(l: SourceHList): FieldType[K, V] :: TargetHListTail =
+      field[K](extractor.extract(select(l))) :: mrT.value(l)
+  }
+}
+
+// FIXME: not safe
+//trait LowPriorityMapRecordOption6 extends LowPriorityMapRecordOption7 {
+//  /**
+//    * W在Option中，V和W是一样的类型
+//    */
+//  implicit def hconsMapRecordOption6[K, V, SourceHList <: HList, TargetHListTail <: HList]
+//  (implicit
+//   select: Selector.Aux[SourceHList, K, V],
+//   mrT: Lazy[MapRecord[SourceHList, TargetHListTail]])
+//  : MR[SourceHList, K, Option[V], TargetHListTail] = new MR[SourceHList, K, Option[V], TargetHListTail] {
+//    override def apply(l: SourceHList): FieldType[K, Option[V]] :: TargetHListTail = select(l) match {
+//      case v if v == null => field[K](None) :: mrT.value(l)
+//      case v => field[K](Some(v)) :: mrT.value(l)
+//    }
+//  }
+//}
+
+trait LowPriorityMapRecordOption5 extends LowPriorityMapRecordOption7 {
   /**
     * Key对应的是一个Option[V]，并且V和W不是同一个类型
     * 把V提取出来，然后再用V => W
@@ -52,7 +86,7 @@ trait LowPriorityMapRecordOption5 extends LowPriorityMapRecord1 {
    f: V => W,
    mrT: Lazy[MapRecord[SourceHList, TargetHListTail]],
    extractor: UnsafeOptionExtractor[V])
-  : MV1[SourceHList, K, W, TargetHListTail] = new MV1[SourceHList, K, W, TargetHListTail] {
+  : MR[SourceHList, K, W, TargetHListTail] = new MR[SourceHList, K, W, TargetHListTail] {
     override def apply(l: SourceHList): FieldType[K, W] :: TargetHListTail =
       field[K](f(extractor.extract(select(l)))) :: mrT.value(l)
   }
@@ -68,7 +102,7 @@ trait LowPriorityMapRecordOption4 extends LowPriorityMapRecordOption5 {
    select: Selector.Aux[SourceHList, K, V],
    f: V => W,
    mrT: Lazy[MapRecord[SourceHList, TargetHListTail]])
-  : MV1[SourceHList, K, Option[W], TargetHListTail] = new MV1[SourceHList, K, Option[W], TargetHListTail] {
+  : MR[SourceHList, K, Option[W], TargetHListTail] = new MR[SourceHList, K, Option[W], TargetHListTail] {
     override def apply(l: SourceHList): FieldType[K, Option[W]] :: TargetHListTail =
       field[K](Some(f(select(l)))) :: mrT.value(l)
   }
@@ -84,7 +118,7 @@ trait LowPriorityMapRecordOption3 extends LowPriorityMapRecordOption4 {
    select: Selector.Aux[SourceHList, K, Option[V]],
    f: V => W,
    mrT: Lazy[MapRecord[SourceHList, TargetHListTail]])
-  : MV1[SourceHList, K, Option[W], TargetHListTail] = new MV1[SourceHList, K, Option[W], TargetHListTail] {
+  : MR[SourceHList, K, Option[W], TargetHListTail] = new MR[SourceHList, K, Option[W], TargetHListTail] {
     override def apply(l: SourceHList): FieldType[K, Option[W]] :: TargetHListTail =
       field[K](select(l).map(f)) :: mrT.value(l)
   }
@@ -101,7 +135,7 @@ trait LowPriorityMapRecordIterable1 extends LowPriorityMapRecordOption3 {
    f: V => W,
    mrT: Lazy[MapRecord[SourceHList, TargetHListTail]],
    cbf: CanBuildFrom[_, W, S[W]])
-  : MV1[SourceHList, K, S[W], TargetHListTail] = new MV1[SourceHList, K, S[W], TargetHListTail] {
+  : MR[SourceHList, K, S[W], TargetHListTail] = new MR[SourceHList, K, S[W], TargetHListTail] {
     override def apply(l: SourceHList): FieldType[K, S[W]] :: TargetHListTail = {
       val b = cbf()
       b ++= select(l).asInstanceOf[Iterable[V]].map(f)
@@ -121,7 +155,7 @@ trait LowPriorityMapRecord0 extends LowPriorityMapRecordIterable1 {
    genW: LabelledGeneric.Aux[W, WRepr],
    mrH: Lazy[MapRecord[VRepr, WRepr]],
    mrT: Lazy[MapRecord[SourceHList, TargetHListTail]])
-  : MV1[SourceHList, K, W, TargetHListTail] = new MV1[SourceHList, K, W, TargetHListTail] {
+  : MR[SourceHList, K, W, TargetHListTail] = new MR[SourceHList, K, W, TargetHListTail] {
     override def apply(l: SourceHList): FieldType[K, W] :: TargetHListTail =
       field[K](genW.from(mrH.value(genV.to(select(l))))) :: mrT.value(l)
   }
@@ -140,7 +174,7 @@ trait LowPriorityMapRecordOption2 extends LowPriorityMapRecord0 {
    mrH: Lazy[MapRecord[VRepr, WRepr]],
    mrT: Lazy[MapRecord[SourceHList, TargetHListTail]],
    extractor: UnsafeOptionExtractor[V])
-  : MV1[SourceHList, K, W, TargetHListTail] = new MV1[SourceHList, K, W, TargetHListTail] {
+  : MR[SourceHList, K, W, TargetHListTail] = new MR[SourceHList, K, W, TargetHListTail] {
     override def apply(l: SourceHList): FieldType[K, W] :: TargetHListTail =
       field[K](genW.from(mrH.value(genV.to(extractor.extract(select(l)))))) :: mrT.value(l)
   }
@@ -158,7 +192,7 @@ trait LowPriorityMapRecordOption1 extends LowPriorityMapRecordOption2 {
    genW: LabelledGeneric.Aux[W, WRepr],
    mrH: Lazy[MapRecord[VRepr, WRepr]],
    mrT: Lazy[MapRecord[SourceHList, TargetHListTail]])
-  : MV1[SourceHList, K, Option[W], TargetHListTail] = new MV1[SourceHList, K, Option[W], TargetHListTail] {
+  : MR[SourceHList, K, Option[W], TargetHListTail] = new MR[SourceHList, K, Option[W], TargetHListTail] {
     override def apply(l: SourceHList): ::[FieldType[K, Option[W]], TargetHListTail] =
       field[K](Some(genW.from(mrH.value(genV.to(select(l)))))) :: mrT.value(l)
   }
@@ -176,7 +210,7 @@ trait LowPriorityMapRecordOption0 extends LowPriorityMapRecordOption1 {
    genW: LabelledGeneric.Aux[W, WRepr],
    mrH: Lazy[MapRecord[VRepr, WRepr]],
    mrT: Lazy[MapRecord[SourceHList, TargetHListTail]])
-  : MV1[SourceHList, K, Option[W], TargetHListTail] = new MV1[SourceHList, K, Option[W], TargetHListTail] {
+  : MR[SourceHList, K, Option[W], TargetHListTail] = new MR[SourceHList, K, Option[W], TargetHListTail] {
     override def apply(l: SourceHList): ::[FieldType[K, Option[W]], TargetHListTail] =
       field[K](select(l).map(v => genW.from(mrH.value(genV.to(v))))) :: mrT.value(l)
   }
@@ -195,7 +229,7 @@ trait LowPriorityMapRecordIterable0 extends LowPriorityMapRecordOption0 {
    mrH: Lazy[MapRecord[VRepr, WRepr]],
    mrT: Lazy[MapRecord[SourceHList, TargetHListTail]],
    cbf: CanBuildFrom[_, W, S[W]])
-  : MV1[SourceHList, K, S[W], TargetHListTail] = new MV1[SourceHList, K, S[W], TargetHListTail] {
+  : MR[SourceHList, K, S[W], TargetHListTail] = new MR[SourceHList, K, S[W], TargetHListTail] {
     override def apply(l: SourceHList): ::[FieldType[K, S[W]], TargetHListTail] = {
       val b = cbf()
       b ++= select(l).asInstanceOf[Iterable[V]].map(v => genW.from(mrH.value(genV.to(v))))
@@ -205,7 +239,7 @@ trait LowPriorityMapRecordIterable0 extends LowPriorityMapRecordOption0 {
 }
 
 object MapRecord extends LowPriorityMapRecordIterable0 {
-  //  implicit val hnilMapRecord: MapRecord[HNil, HNil] = new MapRecord[HNil, HNil] {
+  //  implicit val hnilMapRecord: autoMapper.MapRecord[HNil, HNil] = new autoMapper.MapRecord[HNil, HNil] {
   //    override def apply(l: HNil): HNil = l
   //  }
 
@@ -236,8 +270,8 @@ class Projection[A, B] extends Serializable {
   def to[LA <: HList, LB <: HList](a: A)(implicit
                                          genA: LabelledGeneric.Aux[A, LA],
                                          genB: LabelledGeneric.Aux[B, LB],
-                                         mr: MapRecord[LA, LB])
-  : B = genB.from(mr(genA.to(a)))
+                                         mr: MapRecord[LA, LB]): B =
+    genB.from(mr(genA.to(a)))
 }
 
 object Projection {
